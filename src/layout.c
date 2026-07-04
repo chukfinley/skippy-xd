@@ -18,12 +18,10 @@
  */
 
 #include "skippy.h"
-
-// this function redirects to different functions
-// which performs the expose layout
-// by calaculating cw->x, cw->y (new coordinates)
-// and total_width, total_height
-// given cw->src.x, cw->src.y (original coordinates)
+#include <limits.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdlib.h>
 
 void layout_run(MainWin *mw, dlist *windows,
 		unsigned int *total_width, unsigned int *total_height,
@@ -75,9 +73,6 @@ void layout_run(MainWin *mw, dlist *windows,
 	}
 }
 
-// original legacy layout
-//
-//
 void
 layout_xd(MainWin *mw, dlist *windows,
 		unsigned int *total_width, unsigned int *total_height)
@@ -182,11 +177,6 @@ layout_xd(MainWin *mw, dlist *windows,
 
 	dlist_free(rows);
 }
-
-#include <limits.h>
-#include <math.h>
-#include <stdbool.h>
-#include <stdlib.h>
 
 typedef struct {
 	ClientWin *before;
@@ -870,44 +860,6 @@ resolve_separation_constraints(dlist *windows,
 	return residual;
 }
 
-static float
-layout_compactness(dlist *windows,
-		unsigned int *total_width, unsigned int *total_height,
-		float aspect_bias)
-{
-	float energy = 0;
-	float weight = 0;
-
-	for (dlist *iter = dlist_first(windows); iter; iter = iter->next) {
-		ClientWin *cw1 = iter->data;
-
-		for (dlist *jter = iter->next; jter; jter = jter->next) {
-			ClientWin *cw2 = jter->data;
-			float x1, y1, x2, y2;
-
-			body_center(cw1, &x1, &y1, total_width, total_height);
-			body_center(cw2, &x2, &y2, total_width, total_height);
-
-			float dx = (x2 - x1) / aspect_bias;
-			float dy = (y2 - y1) * aspect_bias;
-
-			float dist = sqrt(dx * dx + dy * dy + 1e-8);
-
-			float m1 = body_mass(cw1, total_width, total_height);
-			float m2 = body_mass(cw2, total_width, total_height);
-			float w = m1 * m2;
-
-			energy += w * dist;
-			weight += w;
-		}
-	}
-
-	if (weight <= 0)
-		return 0;
-
-	return energy / weight;
-}
-
 static void
 apply_position_step(dlist *windows, float max_position_step)
 {
@@ -926,49 +878,64 @@ apply_position_step(dlist *windows, float max_position_step)
 }
 
 static void
-apply_attraction_step(dlist *windows,
+layout_mass_center(dlist *windows,
 		unsigned int *total_width, unsigned int *total_height,
-		float aspect_bias,
-		float attraction_step,
-		float max_position_step)
+		float *center_x, float *center_y, float *total_mass)
 {
+	*center_x = 0;
+	*center_y = 0;
+	*total_mass = 0;
+
 	foreach_dlist (dlist_first(windows)) {
 		ClientWin *cw = iter->data;
-		cw->vx = 0;
-		cw->vy = 0;
+		float x, y;
+		float m = body_mass(cw, total_width, total_height);
+
+		body_center(cw, &x, &y, total_width, total_height);
+
+		*center_x += m * x;
+		*center_y += m * y;
+		*total_mass += m;
 	}
 
-	for (dlist *iter = dlist_first(windows); iter; iter = iter->next) {
-		ClientWin *cw1 = iter->data;
-
-		for (dlist *jter = dlist_first(windows); jter; jter = jter->next) {
-			ClientWin *cw2 = jter->data;
-			float x1, y1, x2, y2;
-			float ux, uy;
-
-			if (cw1 == cw2)
-				continue;
-
-			body_center(cw1, &x1, &y1, total_width, total_height);
-			body_center(cw2, &x2, &y2, total_width, total_height);
-
-			unit_attraction(x2 - x1, y2 - y1, &ux, &uy);
-
-			float m = body_mass(cw2, total_width, total_height);
-
-			cw1->vx += attraction_step * m * ux / aspect_bias;
-			cw1->vy += attraction_step * m * uy * aspect_bias;
-		}
+	if (*total_mass > 0) {
+		*center_x /= *total_mass;
+		*center_y /= *total_mass;
 	}
-
-	apply_position_step(windows, max_position_step);
 }
 
 static void
-apply_repulsion_step(dlist *windows,
+restore_mass_center(dlist *windows,
 		unsigned int *total_width, unsigned int *total_height,
-		float repulsion_step,
-		float max_position_step)
+		float center_x, float center_y)
+{
+	float new_center_x, new_center_y, total_mass;
+
+	layout_mass_center(windows,
+			total_width, total_height,
+			&new_center_x, &new_center_y, &total_mass);
+
+	if (total_mass <= 0)
+		return;
+
+	float dx = center_x - new_center_x;
+	float dy = center_y - new_center_y;
+
+	foreach_dlist (dlist_first(windows)) {
+		ClientWin *cw = iter->data;
+
+		cw->fx += dx;
+		cw->fy += dy;
+	}
+}
+
+static void
+apply_pairwise_gravity_step(dlist *windows,
+		unsigned int *total_width, unsigned int *total_height,
+		float aspect_bias,
+		float gravity_step,
+		float max_position_step,
+		bool attraction)
 {
 	foreach_dlist (dlist_first(windows)) {
 		ClientWin *cw = iter->data;
@@ -983,23 +950,33 @@ apply_repulsion_step(dlist *windows,
 			ClientWin *cw2 = jter->data;
 			float x1, y1, x2, y2;
 			float ux, uy;
+			float m;
 
 			if (cw1 == cw2)
 				continue;
 
-			if (intersectArea(cw1, cw2,
+			if (!attraction
+					&& intersectArea(cw1, cw2,
 						total_width, total_height) <= 0)
 				continue;
 
-			body_center(cw1, &x1, &y1, total_width, total_height);
-			body_center(cw2, &x2, &y2, total_width, total_height);
+			body_center(cw1, &x1, &y1,
+					total_width, total_height);
+			body_center(cw2, &x2, &y2,
+					total_width, total_height);
 
 			unit_attraction(x2 - x1, y2 - y1, &ux, &uy);
 
-			float m = body_mass(cw2, total_width, total_height);
+			m = body_mass(cw2, total_width, total_height);
 
-			cw1->vx -= repulsion_step * m * ux;
-			cw1->vy -= repulsion_step * m * uy;
+			if (attraction) {
+				cw1->vx += gravity_step * m * ux / aspect_bias;
+				cw1->vy += gravity_step * m * uy * aspect_bias;
+			}
+			else {
+				cw1->vx -= gravity_step * m * ux / aspect_bias;
+				cw1->vy -= gravity_step * m * uy * aspect_bias;
+			}
 		}
 	}
 
@@ -1016,24 +993,22 @@ save_positions(dlist *windows)
 	}
 }
 
-static void
-save_best_positions(dlist *windows)
+static float
+max_position_movement_px(dlist *windows,
+		unsigned int *total_width, unsigned int *total_height)
 {
-	foreach_dlist (dlist_first(windows)) {
-		ClientWin *cw = iter->data;
-		cw->best_fx = cw->fx;
-		cw->best_fy = cw->fy;
-	}
-}
+	float max_move = 0;
 
-static void
-restore_best_positions(dlist *windows)
-{
 	foreach_dlist (dlist_first(windows)) {
 		ClientWin *cw = iter->data;
-		cw->fx = cw->best_fx;
-		cw->fy = cw->best_fy;
+		float dx = (cw->fx - cw->fx2) * (float) *total_width;
+		float dy = (cw->fy - cw->fy2) * (float) *total_height;
+		float move = sqrt(dx * dx + dy * dy);
+
+		max_move = MAX(max_move, move);
 	}
+
+	return max_move;
 }
 
 static void
@@ -1056,8 +1031,8 @@ layout_cosmos(MainWin *mw, dlist *windows,
 	const float aratio = (float) mw->width / (float) mw->height;
 	const float aspect_bias = sqrt(aratio) / 1.4;
 
-	const float attraction_step = 3e-2;
-	const float repulsion_step = 1e-2;
+	const float attraction_step = 1e-2;
+	const float repulsion_step = 3e-3;
 	const float max_position_step = 0.05;
 
 	const int expansion_projection_passes = 8;
@@ -1075,11 +1050,7 @@ layout_cosmos(MainWin *mw, dlist *windows,
 
 	const float scatter_center_threshold = 0.10;
 
-	const int progress_window = 32;
-	const int stable_windows_required = 2;
-	const int max_collapse_iterations = 2000;
-
-	const float compactness_sleep_px = 0.05;
+	const float movement_sleep_px = 0.05;
 
 	// convert pixel coordinates to normalized layout coordinates
 	{
@@ -1131,8 +1102,13 @@ layout_cosmos(MainWin *mw, dlist *windows,
 	// expansion
 	{
 		int iterations = 0;
+		for (; iterations<1000; iterations++) {
+			float center_x, center_y, total_mass;
 
-		while (iterations < 1000) {
+			layout_mass_center(windows,
+					total_width, total_height,
+					&center_x, &center_y, &total_mass);
+
 			float residual =
 				max_residual_penetration_px(windows,
 						total_width, total_height,
@@ -1145,10 +1121,12 @@ layout_cosmos(MainWin *mw, dlist *windows,
 
 			save_positions(windows);
 
-			apply_repulsion_step(windows,
+			apply_pairwise_gravity_step(windows,
 					total_width, total_height,
+					aspect_bias,
 					repulsion_step,
-					max_position_step);
+					max_position_step,
+					false);
 
 			resolve_separation_constraints(windows,
 					total_width, total_height,
@@ -1161,36 +1139,32 @@ layout_cosmos(MainWin *mw, dlist *windows,
 					0.0,
 					aspect_bias);
 
-
-			iterations++;
+			restore_mass_center(windows,
+					total_width, total_height,
+					center_x, center_y);
 		}
 
+		printfdf(false, "(): %d expansion iterations", iterations);
 	}
 
 	// contraction
 	{
 		int iterations = 0;
-		int window_iterations = 0;
-		int stable_windows = 0;
-		bool done = false;
+		for (; iterations<10000; iterations++) {
+			float center_x, center_y, total_mass;
 
-		float best_compactness =
-			layout_compactness(windows,
+			layout_mass_center(windows,
 					total_width, total_height,
-					aspect_bias);
+					&center_x, &center_y, &total_mass);
 
-		float window_start_best_compactness = best_compactness;
-
-		save_best_positions(windows);
-
-		while (!done && iterations < max_collapse_iterations) {
 			save_positions(windows);
 
-			apply_attraction_step(windows,
+			apply_pairwise_gravity_step(windows,
 					total_width, total_height,
 					aspect_bias,
 					attraction_step,
-					max_position_step);
+					max_position_step,
+					true);
 
 			float residual =
 				resolve_separation_constraints(windows,
@@ -1204,50 +1178,20 @@ layout_cosmos(MainWin *mw, dlist *windows,
 						residual_sleep_px,
 						aspect_bias);
 
-			float compactness =
-				layout_compactness(windows,
-						total_width, total_height,
-						aspect_bias);
+			restore_mass_center(windows,
+					total_width, total_height,
+					center_x, center_y);
+
+			float movement_px =
+				max_position_movement_px(windows,
+						total_width, total_height);
 
 			if (residual <= residual_sleep_px
-					&& compactness < best_compactness) {
-				best_compactness = compactness;
-				save_best_positions(windows);
-			}
-
-			window_iterations++;
-
-			if (window_iterations >= progress_window) {
-				float progress_px =
-					(window_start_best_compactness
-					 - best_compactness)
-					* (float) MAX(*total_width, *total_height);
-
-				bool compactness_stable =
-					progress_px <= compactness_sleep_px;
-
-				bool residual_stable =
-					residual <= residual_sleep_px;
-
-				if (compactness_stable && residual_stable)
-					stable_windows++;
-				else
-					stable_windows = 0;
-
-				window_start_best_compactness = best_compactness;
-				window_iterations = 0;
-
-				if (stable_windows >= stable_windows_required)
-					done = true;
-			}
-
-			iterations++;
-
+					&& movement_px <= movement_sleep_px)
+				break;
 		}
 
-		restore_best_positions(windows);
-
-		printfdf(false, "(): %d collapse iterations", iterations);
+		printfdf(false, "(): %d contraction iterations", iterations);
 	}
 
 	// convert normalized layout coordinates back to pixels
