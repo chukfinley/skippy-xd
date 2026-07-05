@@ -1119,6 +1119,7 @@ clientwin_handle(ClientWin *cw, XEvent *ev) {
 					if (mw->searchlen > 0)
 						mw->searchbuf[--mw->searchlen] = '\0';
 					focus_search(ps, mw);
+					mainwin_update_search(mw);
 				}
 				else if (isprint(c)) {
 					if (mw->searchlen < (int) sizeof(mw->searchbuf) - 1) {
@@ -1126,6 +1127,7 @@ clientwin_handle(ClientWin *cw, XEvent *ev) {
 						mw->searchbuf[mw->searchlen] = '\0';
 					}
 					focus_search(ps, mw);
+					mainwin_update_search(mw);
 				}
 			}
 		}

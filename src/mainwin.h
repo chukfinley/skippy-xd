@@ -20,6 +20,8 @@
 #ifndef SKIPPY_MAINWIN_H
 #define SKIPPY_MAINWIN_H
 
+struct _Tooltip;
+
 struct _mainwin_t {
 	session_t *ps;
 	Visual *visual;
@@ -90,6 +92,8 @@ struct _mainwin_t {
 	/// @brief type-to-search filter buffer (matches window titles)
 	char searchbuf[256];
 	int searchlen;
+	/// @brief on-screen display of the current search query (top-centre)
+	struct _Tooltip *searchtip;
 };
 
 MainWin *mainwin_create(session_t *ps);
@@ -98,6 +102,7 @@ void mainwin_destroy(MainWin *);
 void mainwin_map(MainWin *);
 void mainwin_unmap(MainWin *);
 int mainwin_handle(MainWin *, XEvent *);
+void mainwin_update_search(MainWin *mw);
 void mainwin_update_background_config(MainWin *mw);
 void mainwin_update_background(MainWin *mw);
 void mainwin_restore_background(MainWin *mw);

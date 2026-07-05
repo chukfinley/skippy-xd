@@ -178,38 +178,117 @@ tooltip_map(Tooltip *tt, ClientWin *cw, FcChar8 *text, int len)
 {
 	session_t * const ps = tt->mainwin->ps;
 	unsigned int max_width = cw->mini.width * ps->o.tooltip_width;
-	FcChar8 *ptr;
+	if (max_width < 40)
+		max_width = 40;
 
-	//if (tt->window)
-		//XUnmapWindow(ps->dpy, tt->window);
-	
-	XftTextExtentsUtf8(ps->dpy, tt->font, text, len, &tt->extents);
-	
-	while (tt->extents.width > max_width && len > 3) {
-		ptr = text + len - 1;
-		*ptr-- = '\0';
-		*ptr-- = '.';
-		*ptr-- = '.';
-		*ptr-- = '.';
-		len--;
-		XftTextExtentsUtf8(ps->dpy, tt->font, text, len, &tt->extents);
+	// keep the full, untruncated title
+	if (tt->text)
+		free(tt->text);
+	tt->text = (FcChar8 *)malloc(len + 1);
+	memcpy(tt->text, text, len);
+	tt->text[len] = '\0';
+	tt->text_len = len;
+
+	// word-wrap the title into multiple lines that each fit within max_width
+	tt->nlines = 0;
+	unsigned int maxpix = 0;
+	int pos = 0;
+	XGlyphInfo ext;
+	while (pos < len && tt->nlines < TOOLTIP_MAX_LINES) {
+		while (pos < len && tt->text[pos] == ' ')	// skip leading spaces
+			pos++;
+		if (pos >= len)
+			break;
+
+		int lstart = pos, lend = pos, scan = pos;
+		while (scan < len) {
+			int wend = scan;			// next word = [scan, wend)
+			while (wend < len && tt->text[wend] != ' ')
+				wend++;
+			XftTextExtentsUtf8(ps->dpy, tt->font,
+					tt->text + lstart, wend - lstart, &ext);
+			if (ext.width <= max_width) {
+				lend = wend;
+				scan = wend;
+				while (scan < len && tt->text[scan] == ' ')
+					scan++;
+			}
+			else {
+				if (lend == lstart) {	// single word too long -> hard-break
+					int take = wend - lstart;
+					while (take > 1) {
+						XftTextExtentsUtf8(ps->dpy, tt->font,
+								tt->text + lstart, take, &ext);
+						if (ext.width <= max_width)
+							break;
+						take--;
+					}
+					lend = lstart + take;
+				}
+				break;
+			}
+		}
+
+		tt->lines[tt->nlines].off = lstart;
+		tt->lines[tt->nlines].len = lend - lstart;
+		XftTextExtentsUtf8(ps->dpy, tt->font,
+				tt->text + lstart, lend - lstart, &ext);
+		if (ext.width > maxpix)
+			maxpix = ext.width;
+		tt->nlines++;
+		pos = lend;
+	}
+	if (tt->nlines == 0) {			// fallback: whole string on one line
+		tt->lines[0].off = 0;
+		tt->lines[0].len = len;
+		tt->nlines = 1;
+		XftTextExtentsUtf8(ps->dpy, tt->font, tt->text, len, &ext);
+		maxpix = ext.width;
 	}
 
-	tt->width = tt->extents.width + 8;
-	tt->height = tt->font_height + 5;
+	int line_h = tt->font_height + 2;
+	tt->width = maxpix + 8;
+	tt->height = tt->nlines * line_h + 4;
 	XResizeWindow(ps->dpy, tt->window, tt->width, tt->height);
 	tooltip_move(tt, cw);
-	
-	if(tt->text)
-		free(tt->text);
-	
-	tt->text = (FcChar8 *)malloc(len);
-	memcpy(tt->text, text, len);
-	
-	tt->text_len = len;
-	
+
 	XMapWindow(ps->dpy, tt->window);
 	XRaiseWindow(ps->dpy, tt->window);
+}
+
+// Show arbitrary text as a single-line box, centred horizontally on cx with its
+// top at ty (absolute mainwin coordinates). Used for the search-query display.
+void
+tooltip_show_at(Tooltip *tt, int cx, int ty, FcChar8 *text, int len)
+{
+	session_t * const ps = tt->mainwin->ps;
+
+	if (tt->text)
+		free(tt->text);
+	tt->text = (FcChar8 *)malloc(len + 1);
+	memcpy(tt->text, text, len);
+	tt->text[len] = '\0';
+	tt->text_len = len;
+
+	tt->nlines = 1;
+	tt->lines[0].off = 0;
+	tt->lines[0].len = len;
+
+	XGlyphInfo ext;
+	XftTextExtentsUtf8(ps->dpy, tt->font, text, len, &ext);
+	int line_h = tt->font_height + 2;
+	tt->width  = ext.width + 16;
+	tt->height = line_h + 8;
+	XResizeWindow(ps->dpy, tt->window, tt->width, tt->height);
+
+	int x = cx - (int) tt->width / 2;
+	x = MIN(MAX(0, x), tt->mainwin->x + tt->mainwin->width - (int) tt->width);
+	XMoveWindow(ps->dpy, tt->window, x, ty);
+
+	XMapWindow(ps->dpy, tt->window);
+	XRaiseWindow(ps->dpy, tt->window);
+	tooltip_draw(tt, true);
+	XFlush(ps->dpy);
 }
 
 void
@@ -220,7 +299,9 @@ tooltip_move(Tooltip *tt, ClientWin *cw) {
 		y = ps->o.tooltip_offsetY;
 
     x += cw->mini.x + cw->mini.width/2 - tt->width / 2;
-    y += cw->mini.y + cw->mini.height;
+    // attach the label INSIDE the window, near its bottom edge, so it is
+    // clearly tied to its own window and never intrudes into neighbours
+    y += cw->mini.y + cw->mini.height - tt->height;
 
 	x = MIN(MAX(0, x), tt->mainwin->x + tt->mainwin->width - tt->width);
 	y = MIN(MAX(0, y), tt->mainwin->y + tt->mainwin->height - tt->height);
@@ -255,21 +336,27 @@ tooltip_draw(Tooltip *tt, bool focused)
 		XftDrawRect(tt->draw, &tt->background, 1, 1, tt->width - 2, tt->height - 2);
 
 	int base_x = 4;
-	int base_y = 1 + tt->extents.y + (tt->font_height - tt->extents.y)/2;
+	int line_h = tt->font_height + 2;
 
-	if (tt->outline.pixel != None) {
-		for (int dx = -1; dx <= 1; dx++) {
-			for (int dy = -1; dy <= 1; dy++) {
-				if (dx == 0 && dy == 0)
-					continue;
-				XftDrawStringUtf8(tt->draw, &tt->outline, tt->font,
-						base_x + dx, base_y + dy,
-						tt->text, tt->text_len);
+	for (int n = 0; n < tt->nlines; n++) {
+		FcChar8 *ltext = tt->text + tt->lines[n].off;
+		int llen = tt->lines[n].len;
+		int base_y = 2 + n * line_h + tt->font->ascent;
+
+		if (tt->outline.pixel != None) {
+			for (int dx = -1; dx <= 1; dx++) {
+				for (int dy = -1; dy <= 1; dy++) {
+					if (dx == 0 && dy == 0)
+						continue;
+					XftDrawStringUtf8(tt->draw, &tt->outline, tt->font,
+							base_x + dx, base_y + dy,
+							ltext, llen);
+				}
 			}
 		}
-	}
 
-	XftDrawStringUtf8(tt->draw, &tt->color, tt->font,
-			base_x, base_y,
-			tt->text, tt->text_len);
+		XftDrawStringUtf8(tt->draw, &tt->color, tt->font,
+				base_x, base_y,
+				ltext, llen);
+	}
 }

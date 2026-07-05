@@ -911,6 +911,8 @@ init_focus(MainWin *mw, enum layoutmode layout, Window leader) {
 	// reset type-to-search filter on every (re)activation
 	mw->searchbuf[0] = '\0';
 	mw->searchlen = 0;
+	if (mw->searchtip)
+		tooltip_unmap(mw->searchtip);
 
 	// ordering of client windows list
 	// is important for prev/next window selection

@@ -34,12 +34,19 @@ struct _Tooltip {
 	
 	FcChar8 *text;
 	int text_len;
+
+	// word-wrapped lines (offsets into text) for multi-line labels
+#define TOOLTIP_MAX_LINES 8
+	int nlines;
+	struct { int off; int len; } lines[TOOLTIP_MAX_LINES];
 };
 typedef struct _Tooltip Tooltip;
 
 Tooltip *tooltip_create(MainWin *mw);
 void tooltip_destroy(Tooltip *);
 void tooltip_map(Tooltip *tt, ClientWin *cw,
+		FcChar8 *text, int len);
+void tooltip_show_at(Tooltip *tt, int cx, int ty,
 		FcChar8 *text, int len);
 void tooltip_unmap(Tooltip *);
 void tooltip_draw(Tooltip *, bool);

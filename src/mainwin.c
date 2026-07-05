@@ -249,6 +249,10 @@ mainwin_create(session_t *ps) {
 
 	XCompositeRedirectSubwindows (ps->dpy, ps->root, CompositeRedirectAutomatic);
 
+	mw->searchbuf[0] = '\0';
+	mw->searchlen = 0;
+	mw->searchtip = tooltip_create(mw);
+
 	return mw;
 
 mainwin_create_err:
@@ -596,8 +600,41 @@ mainwin_unmap(MainWin *mw)
 		mw->bg_pixmap = None;
 	}
 	XUngrabKeyboard(mw->ps->dpy, CurrentTime);
+	if (mw->searchtip)
+		tooltip_unmap(mw->searchtip);
 	XUnmapWindow(mw->ps->dpy, mw->window);
 	mw->mapped = false;
+}
+
+// Update the on-screen search-query indicator (top-centre of active screen).
+void
+mainwin_update_search(MainWin *mw) {
+	if (!mw->searchtip)
+		return;
+	if (mw->searchlen == 0) {
+		tooltip_unmap(mw->searchtip);
+		return;
+	}
+
+	char disp[300];
+	int n = snprintf(disp, sizeof(disp), "Suche:  %s", mw->searchbuf);
+	if (n < 0)
+		return;
+	if (n >= (int) sizeof(disp))
+		n = sizeof(disp) - 1;
+
+	int cx, top;
+#ifdef CFG_XINERAMA
+	if (mw->xin_active) {
+		cx  = mw->xin_active->x_org + mw->xin_active->width / 2;
+		top = mw->xin_active->y_org + 14;
+	} else
+#endif
+	{
+		cx  = mw->x + mw->width / 2;
+		top = mw->y + 14;
+	}
+	tooltip_show_at(mw->searchtip, cx, top, (FcChar8 *) disp, n);
 }
 
 void
@@ -630,6 +667,9 @@ mainwin_destroy(MainWin *mw) {
 
 	if(mw->shadowPixmap != None)
 		XFreePixmap(ps->dpy, mw->shadowPixmap);
+
+	if (mw->searchtip)
+		tooltip_destroy(mw->searchtip);
 
 	XDestroyWindow(ps->dpy, mw->window);
 	
