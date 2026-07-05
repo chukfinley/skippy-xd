@@ -908,6 +908,10 @@ static void
 init_focus(MainWin *mw, enum layoutmode layout, Window leader) {
 	session_t *ps = mw->ps;
 
+	// reset type-to-search filter on every (re)activation
+	mw->searchbuf[0] = '\0';
+	mw->searchlen = 0;
+
 	// ordering of client windows list
 	// is important for prev/next window selection
 	mw->focuslist = dlist_dup(mw->clientondesktop);

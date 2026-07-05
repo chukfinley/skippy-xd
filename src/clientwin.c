@@ -1050,6 +1050,37 @@ select_clientwindow(ClientWin* cw, enum cliop op) {
 	}
 }
 
+// Type-to-search: focus the first window whose title contains the current
+// search buffer (case-insensitive). Called on every printable keystroke.
+static void
+focus_search(session_t *ps, MainWin *mw) {
+	if (mw->searchlen == 0)
+		return;
+
+	dlist *iter;
+	for (iter = dlist_first(mw->focuslist); iter; iter = iter->next) {
+		ClientWin *fcw = (ClientWin *) iter->data;
+		if (!fcw)
+			continue;
+		int len = 0;
+		FcChar8 *title = wm_get_window_title(ps, fcw->wid_client, &len);
+		if (!title)
+			continue;
+		bool match = (strcasestr((char *) title, mw->searchbuf) != NULL);
+		free(title);
+		if (match) {
+			if (mw->client_to_focus && mw->client_to_focus != fcw) {
+				mw->client_to_focus->focused = false;
+				clientwin_render(mw->client_to_focus);
+			}
+			focus_miniw(ps, fcw);
+			mainwin_render_borders(mw);
+			XFlush(ps->dpy);
+			return;
+		}
+	}
+}
+
 int
 clientwin_handle(ClientWin *cw, XEvent *ev) {
 	if (! cw)
@@ -1077,6 +1108,27 @@ clientwin_handle(ClientWin *cw, XEvent *ev) {
 			focus_miniw_prev(ps, cw->mainwin->client_to_focus);
 		else if (arr_keycodes_includes(cw->mainwin->keycodes_Next, evk->keycode))
 			focus_miniw_next(ps, cw->mainwin->client_to_focus);
+		else {
+			// type-to-search: build title filter from printable keys
+			MainWin *mw = cw->mainwin;
+			char kbuf[8] = {0};
+			int n = XLookupString(evk, kbuf, sizeof(kbuf) - 1, NULL, NULL);
+			if (n == 1) {
+				unsigned char c = (unsigned char) kbuf[0];
+				if (c == '\b' || c == 0x7f) {
+					if (mw->searchlen > 0)
+						mw->searchbuf[--mw->searchlen] = '\0';
+					focus_search(ps, mw);
+				}
+				else if (isprint(c)) {
+					if (mw->searchlen < (int) sizeof(mw->searchbuf) - 1) {
+						mw->searchbuf[mw->searchlen++] = c;
+						mw->searchbuf[mw->searchlen] = '\0';
+					}
+					focus_search(ps, mw);
+				}
+			}
+		}
 		cw->mainwin->pressed_key = true;
 	}
 

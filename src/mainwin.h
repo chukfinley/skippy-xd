@@ -86,6 +86,10 @@ struct _mainwin_t {
 	ClientWin *client_to_focus;
 	/// @brief the originally focused window
 	ClientWin *client_to_focus_on_cancel;
+
+	/// @brief type-to-search filter buffer (matches window titles)
+	char searchbuf[256];
+	int searchlen;
 };
 
 MainWin *mainwin_create(session_t *ps);
